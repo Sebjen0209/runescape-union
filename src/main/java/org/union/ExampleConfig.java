@@ -1,4 +1,4 @@
-package com.example;
+package org.union;
 
 import net.runelite.client.config.Config;
 import net.runelite.client.config.ConfigGroup;
@@ -9,11 +9,11 @@ public interface ExampleConfig extends Config
 {
 	@ConfigItem(
 		keyName = "greeting",
-		name = "Welcome Greeting",
+		name = "Welcome Greeting wuhu",
 		description = "The message to show to the user when they login"
 	)
 	default String greeting()
 	{
-		return "Hello";
+		return "Hello Seb1";
 	}
 }
