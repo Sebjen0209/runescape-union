@@ -42,6 +42,12 @@ public class ExamplePlugin extends Plugin
 	@Inject
 	private UnionOverlay overlay;
 
+	//API related
+	private UnionApiClient unionApiClient;
+	private static final int MISSION_KILL_GOAL = 4; // "kill 200 goblins" daily mission
+	private static final String API_BASE_URL = "https://kjfuh3gwz5.execute-api.eu-north-1.amazonaws.com/prod";
+	private boolean missionCompleted = false;
+
 	// ---- Killcount persistence keys ----
 	private static final String CONFIG_GROUP = "unionting";
 	private static final String CONFIG_KEY_PREFIX = "kc_";
@@ -59,7 +65,16 @@ public class ExamplePlugin extends Plugin
 	protected void startUp()
 	{
 		log.debug("Union Ting started!");
+
+		//API Related
+		unionApiClient = new UnionApiClient(API_BASE_URL);
+
+		//overlay
 		overlayManager.add(overlay);
+
+		// ---- TEMPORARY for testing: wipe saved counts on every startup
+		resetKillCounts();
+
 
 		// Load saved counts for tracked NPC names
 		for (String name : TRACKED_NPC_NAMES)
@@ -75,6 +90,7 @@ public class ExamplePlugin extends Plugin
 	@Override
 	protected void shutDown()
 	{
+		unionApiClient.shutdown();
 		overlayManager.remove(overlay);
 		recentlyAttackedNpcIndexes.clear();
 		log.debug("Union Ting stopped!");
@@ -151,6 +167,19 @@ public class ExamplePlugin extends Plugin
 				"Killcount: " + name + " = " + newCount,
 				null
 		);
+		int total = killCountsByName.values().stream().mapToInt(Integer::intValue).sum();
+		if (!missionCompleted && total >= MISSION_KILL_GOAL)
+		{
+			missionCompleted = true;
+			unionApiClient.recordContribution(
+					config.userId(),      // from config
+					config.unionId(),     // from config
+					total,                // delta_points = goblin kills
+					1                     // delta_missions = 1 completed mission
+			);
+			client.addChatMessage(ChatMessageType.GAMEMESSAGE, "",
+					"Mission complete! Contribution sent to union.", null);
+		}
 	}
 
 	public Map<String, Integer> getKillCountsByName()
@@ -161,6 +190,17 @@ public class ExamplePlugin extends Plugin
 	private boolean isLikelyMyKill(NPC npc)
 	{
 		return recentlyAttackedNpcIndexes.remove(npc.getIndex());
+	}
+
+	public void resetKillCounts()
+	{
+		for (String name : TRACKED_NPC_NAMES)
+		{
+			configManager.unsetConfiguration(CONFIG_GROUP, CONFIG_KEY_PREFIX + name);
+		}
+		killCountsByName.clear();
+		missionCompleted = false;
+		log.debug("Kill counts and mission reset!");
 	}
 
 	@Provides
