@@ -8,20 +8,18 @@ import net.runelite.api.Client;
 import net.runelite.api.ChatMessageType;
 import net.runelite.api.GameState;
 import net.runelite.api.NPC;
-import net.runelite.api.NpcID;
-import net.runelite.api.Player;
 import net.runelite.api.events.ActorDeath;
 import net.runelite.api.events.GameStateChanged;
+import net.runelite.api.events.InteractingChanged;
 
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
+import net.runelite.client.ui.overlay.OverlayManager;
+import net.runelite.api.events.HitsplatApplied;
 
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 @Slf4j
 @PluginDescriptor(
@@ -38,37 +36,38 @@ public class ExamplePlugin extends Plugin
 	@Inject
 	private ConfigManager configManager;
 
+	@Inject
+	private OverlayManager overlayManager;
+
+	@Inject
+	private UnionOverlay overlay;
+
 	// ---- Killcount persistence keys ----
 	private static final String CONFIG_GROUP = "unionting";
 	private static final String CONFIG_KEY_PREFIX = "kc_";
 
-	// ---- Which NPCs to track (IDs are best) ----
-	// Add/remove IDs here. Use NpcID constants where possible.
-	private static final Set<Integer> TRACKED_NPC_IDS = new HashSet<Integer>()
-	{{
-		add(NpcID.GOBLIN);
-		add(NpcID.GOBLIN_3029);
-		add(NpcID.GOBLIN_3030);
-		add(NpcID.GOBLIN_3031);
-		add(NpcID.GOBLIN_3032);
-		// add(NpcID.GOBLIN_XXXX); // add variants you care about
-	}};
+	// ---- Which NPCs to track (by in-game name) ----
+	private static final Set<String> TRACKED_NPC_NAMES = new HashSet<>(Arrays.asList(
+			"Goblin"
+	));
 
-	// In-memory counts: npcId -> killcount
-	private final Map<Integer, Integer> killCountsById = new HashMap<>();
+	// In-memory counts: npcName -> killcount
+	private final Map<String, Integer> killCountsByName = new HashMap<>();
+	private final Set<Integer> recentlyAttackedNpcIndexes = new HashSet<>();
 
 	@Override
 	protected void startUp()
 	{
 		log.debug("Union Ting started!");
+		overlayManager.add(overlay);
 
-		// Load saved counts for tracked NPC IDs
-		for (int id : TRACKED_NPC_IDS)
+		// Load saved counts for tracked NPC names
+		for (String name : TRACKED_NPC_NAMES)
 		{
-			Integer saved = configManager.getConfiguration(CONFIG_GROUP, CONFIG_KEY_PREFIX + id, int.class);
+			Integer saved = configManager.getConfiguration(CONFIG_GROUP, CONFIG_KEY_PREFIX + name, int.class);
 			if (saved != null)
 			{
-				killCountsById.put(id, saved);
+				killCountsByName.put(name, saved);
 			}
 		}
 	}
@@ -76,6 +75,8 @@ public class ExamplePlugin extends Plugin
 	@Override
 	protected void shutDown()
 	{
+		overlayManager.remove(overlay);
+		recentlyAttackedNpcIndexes.clear();
 		log.debug("Union Ting stopped!");
 	}
 
@@ -94,6 +95,28 @@ public class ExamplePlugin extends Plugin
 	}
 
 	@Subscribe
+	public void onHitsplatApplied(HitsplatApplied event)
+	{
+		// Only register if YOU dealt a hitsplat on a tracked NPC
+		if (!(event.getActor() instanceof NPC))
+		{
+			return;
+		}
+
+		NPC npc = (NPC) event.getActor();
+		if (npc.getName() == null || !TRACKED_NPC_NAMES.contains(npc.getName()))
+		{
+			return;
+		}
+
+		// Check the hitsplat was dealt by the local player
+		if (event.getHitsplat().isMine())
+		{
+			recentlyAttackedNpcIndexes.add(npc.getIndex());
+		}
+	}
+
+	@Subscribe
 	public void onActorDeath(ActorDeath event)
 	{
 		if (!(event.getActor() instanceof NPC))
@@ -102,39 +125,42 @@ public class ExamplePlugin extends Plugin
 		}
 
 		NPC npc = (NPC) event.getActor();
-		int id = npc.getId();
+		String name = npc.getName();
 
-		// Only track specific NPC IDs
-		if (!TRACKED_NPC_IDS.contains(id))
+		// Only track NPCs whose name is in our set
+		if (name == null || !TRACKED_NPC_NAMES.contains(name))
 		{
 			return;
 		}
 
-		// Best-effort attribution: only count if it was interacting with you when it died
+		// Only count if we recently attacked this NPC
 		if (!isLikelyMyKill(npc))
 		{
 			return;
 		}
 
-		int newCount = killCountsById.getOrDefault(id, 0) + 1;
-		killCountsById.put(id, newCount);
+		int newCount = killCountsByName.getOrDefault(name, 0) + 1;
+		killCountsByName.put(name, newCount);
 
 		// Persist it (survives restart)
-		configManager.setConfiguration(CONFIG_GROUP, CONFIG_KEY_PREFIX + id, newCount);
+		configManager.setConfiguration(CONFIG_GROUP, CONFIG_KEY_PREFIX + name, newCount);
 
-		String name = npc.getName() != null ? npc.getName() : ("NPC " + id);
 		client.addChatMessage(
 				ChatMessageType.GAMEMESSAGE,
 				"",
-				"Killcount: " + name + " (id " + id + ") = " + newCount,
+				"Killcount: " + name + " = " + newCount,
 				null
 		);
 	}
 
+	public Map<String, Integer> getKillCountsByName()
+	{
+		return Collections.unmodifiableMap(killCountsByName);
+	}
+
 	private boolean isLikelyMyKill(NPC npc)
 	{
-		Player me = client.getLocalPlayer();
-		return me != null && npc.getInteracting() == me;
+		return recentlyAttackedNpcIndexes.remove(npc.getIndex());
 	}
 
 	@Provides
